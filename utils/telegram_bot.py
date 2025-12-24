@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # Initialize Telegram Bot
-_bot = None
-if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
+_bot: Bot | None = None
+if getattr(Config, "TELEGRAM_BOT_TOKEN", None) and getattr(Config, "TELEGRAM_CHAT_ID", None):
     try:
         _bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
         logger.info("✅ Telegram bot initialized successfully.")
@@ -19,7 +19,7 @@ if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
         logger.error(f"❌ Failed to initialize Telegram bot: {e}")
         _bot = None
 else:
-    logger.warning("⚠️ Telegram bot token or chat ID missing in environment. Notifications disabled.")
+    logger.warning("⚠️ Telegram bot token or chat ID missing. Notifications disabled.")
 
 
 # =============== ASYNC SENDER ===============
@@ -50,14 +50,17 @@ def send_telegram_message_sync(message: str):
         return
 
     try:
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         if loop.is_running():
-            # For environments like FastAPI or asyncio loops
+            # For environments like FastAPI or Jupyter notebooks
             loop.create_task(send_telegram_message_async(message))
         else:
-            asyncio.run(send_telegram_message_async(message))
-    except RuntimeError:
-        # Handle edge case: no current running loop
-        asyncio.run(send_telegram_message_async(message))
+            loop.run_until_complete(send_telegram_message_async(message))
+
     except Exception as e:
-        logger.error(f"❌ Failed to send Telegram message (sync): {e}")
+        logger.error(f"❌ Failed to send Telegram message synchronously: {e}")
