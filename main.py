@@ -143,39 +143,33 @@ def get_current_session() -> str:
 
 
 # -------------------- TELEGRAM MESSAGE FORMAT --------------------
-def format_smart_money_message(
-    symbol: str,
-    signal_data: dict,
-    htf_trend: str,
-    session: str,
-    setup_id: str
-) -> str:
-    entry = signal_data.get("entry_price", 0)
-    sl = signal_data.get("stop_loss", 0)
-    tp = signal_data.get("take_profit", 0)
-    direction = signal_data.get("signal_type", "BUY").upper()
+def format_smart_money_message(symbol, signal_data, htf_trend, session, setup_id):
+    return f"""
+<b>🧠 SMART MONEY SETUP CONFIRMED</b>
 
-    return (
-        f"🧠 SMART MONEY SETUP CONFIRMED\n\n"
-        f"Pair: {symbol}\n"
-        f"Direction: {direction}\n\n"
-        f"📍 Entry: {entry:.4f}\n"
-        f"🛑 Stop Loss: {sl:.4f}\n"
-        f"🎯 Take Profit: {tp:.4f}\n\n"
-        f"HTF (1H):\n"
-        f"✔ Liquidity Sweep\n"
-        f"✔ Wick Rejection\n"
-        f"✔ EMA Trend: {htf_trend}\n\n"
-        f"LTF (5m/15m):\n"
-        f"✔ MSS / CHoCH\n"
-        f"✔ FVG Pullback\n"
-        f"✔ Confirmation Close\n\n"
-        f"⚖️ R:R ≥ 1:2\n"
-        f"🚫 One trade per setup\n"
-        f"💼 Session: {session}\n"
-        f"🆔 Setup ID: {setup_id}"
-    )
+<b>Pair:</b> {symbol}
+<b>Direction:</b> {signal_data['signal_type']}
 
+<b>📍 Entry:</b> {signal_data['entry_price']:.4f}
+<b>🛑 Stop Loss:</b> {signal_data['stop_loss']:.4f}
+<b>🎯 Take Profit:</b> {signal_data['take_profit']:.4f}
+
+<b>HTF (1H)</b>
+✔ Liquidity Sweep  
+✔ Wick Rejection  
+✔ EMA Trend: {htf_trend}
+
+<b>LTF (5m / 15m)</b>
+✔ MSS / CHoCH  
+✔ FVG Pullback  
+✔ Confirmation Close  
+
+⚖️ R:R ≥ 1:2  
+🚫 One trade per setup  
+
+<b>💼 Session:</b> {session}
+<b>🆔 Setup ID:</b> {setup_id}
+"""
 
 # -------------------- MAIN LOOP --------------------
 def main():
