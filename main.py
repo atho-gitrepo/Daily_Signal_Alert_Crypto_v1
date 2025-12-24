@@ -1,4 +1,3 @@
-# main.py
 import time
 import logging
 import pandas as pd
@@ -6,7 +5,6 @@ from typing import Dict
 from datetime import datetime, time as dt_time
 
 from settings import Config
-from utils.indicators import Indicators
 from utils.telegram_bot import send_telegram_message_sync as send_telegram_message
 from binance.um_futures import UMFutures
 from binance.exceptions import BinanceAPIException, BinanceRequestException
@@ -23,9 +21,7 @@ logger = logging.getLogger(__name__)
 
 # -------------------- SAFE TELEGRAM WRAPPER --------------------
 def safe_send_telegram_message(message: str):
-    """
-    Prevents Telegram failures from crashing the bot
-    """
+    """Prevent Telegram failure from crashing bot"""
     try:
         send_telegram_message(message)
     except Exception as e:
@@ -34,8 +30,6 @@ def safe_send_telegram_message(message: str):
 
 # -------------------- BINANCE CLIENT --------------------
 class BinanceDataClient:
-    """Client for Binance Futures data."""
-
     def __init__(self):
         self.api_key = Config.BINANCE_API_KEY
         self.api_secret = Config.BINANCE_API_SECRET
@@ -51,185 +45,146 @@ class BinanceDataClient:
         self.price_precisions: Dict[str, int] = {}
         self._get_symbol_precisions()
 
-        logger.info(f"✅ Binance Client initialized. Testnet: {self.is_testnet}")
+        logger.info(f"✅ Binance Client initialized | Testnet={self.is_testnet}")
 
     def _get_symbol_precisions(self):
-        valid_symbols = [
-            s for s in Config.SYMBOLS
-            if s.endswith(Config.QUOTE_ASSET) and s != Config.QUOTE_ASSET
-        ]
-
-        if not valid_symbols:
-            logger.error("❌ No valid symbols found! Check SYMBOLS config.")
-            return
-
         try:
             info = self.futures_client.exchange_info()
-            for symbol in valid_symbols:
+            for symbol in Config.SYMBOLS:
                 s_info = next((s for s in info["symbols"] if s["symbol"] == symbol), None)
                 if not s_info:
                     continue
 
                 price_filter = next(
-                    (f for f in s_info["filters"] if f["filterType"] == "PRICE_FILTER"),
-                    None
+                    (f for f in s_info["filters"] if f["filterType"] == "PRICE_FILTER"), None
                 )
                 if price_filter:
-                    tick_size = price_filter["tickSize"]
-                    precision = len(tick_size.split(".")[-1].rstrip("0"))
-                    self.price_precisions[symbol] = precision
-
+                    tick = price_filter["tickSize"]
+                    self.price_precisions[symbol] = len(tick.split(".")[-1].rstrip("0"))
         except Exception as e:
-            logger.error(f"❌ Could not fetch symbol precisions: {e}")
-
-    def _round_price(self, symbol: str, price: float) -> float:
-        precision = self.price_precisions.get(symbol, 2)
-        return round(price, precision)
+            logger.error(f"❌ Failed to load symbol precision: {e}")
 
     def get_historical_klines(self, symbol: str, interval: str, limit: int) -> pd.DataFrame:
         try:
-            klines = self.futures_client.klines(
-                symbol=symbol,
-                interval=interval,
-                limit=limit
-            )
-
+            klines = self.futures_client.klines(symbol=symbol, interval=interval, limit=limit)
             df = pd.DataFrame(klines, columns=[
-                "open_time", "open", "high", "low", "close", "volume",
-                "close_time", "quote_asset_volume", "number_of_trades",
-                "taker_buy_base_asset_volume",
-                "taker_buy_quote_asset_volume", "ignore"
+                "open_time","open","high","low","close","volume",
+                "close_time","qav","trades","tb_base","tb_quote","ignore"
             ])
 
-            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
             df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
             df.set_index("close_time", inplace=True)
-
-            df[["open", "high", "low", "close", "volume"]] = df[
-                ["open", "high", "low", "close", "volume"]
-            ].apply(pd.to_numeric, errors="coerce")
-
+            df[["open","high","low","close","volume"]] = df[
+                ["open","high","low","close","volume"]
+            ].astype(float)
             return df
-
-        except (BinanceAPIException, BinanceRequestException) as e:
-            logger.error(f"❌ Binance API error for {symbol}: {e}")
-            return pd.DataFrame()
         except Exception as e:
-            logger.error(f"❌ Unexpected error fetching klines for {symbol}: {e}")
+            logger.error(f"❌ Klines error {symbol}: {e}")
             return pd.DataFrame()
-
-    def get_current_price(self, symbol: str) -> float | None:
-        try:
-            ticker = self.futures_client.ticker_price(symbol=symbol)
-            return self._round_price(symbol, float(ticker["price"]))
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch price for {symbol}: {e}")
-            return None
 
 
 # -------------------- SESSION DETECTION --------------------
 def get_current_session() -> str:
-    """Returns LONDON / NY / OTHER based on UTC time"""
     now = datetime.utcnow().time()
-
-    london_start, london_end = dt_time(7, 0), dt_time(16, 0)
-    ny_start, ny_end = dt_time(12, 0), dt_time(21, 0)
-
-    if london_start <= now <= london_end:
+    if dt_time(7, 0) <= now <= dt_time(16, 0):
         return "LONDON"
-    elif ny_start <= now <= ny_end:
+    if dt_time(12, 0) <= now <= dt_time(21, 0):
         return "NY"
     return "OTHER"
 
 
-# -------------------- TELEGRAM MESSAGE FORMAT --------------------
+# -------------------- TELEGRAM FORMAT --------------------
 def format_smart_money_message(symbol, signal_data, htf_trend, session, setup_id):
-    return f"""
-<b>🧠 SMART MONEY SETUP CONFIRMED</b>
+    tdi = float(signal_data.get("tdi_slow_ma", 0))
+    slope = float(signal_data.get("tdi_slope", 0))
+    atr = float(signal_data.get("atr", 0))
+    strength = signal_data.get("signal_strength", "SOFT")
 
-<b>Pair:</b> {symbol}
-<b>Direction:</b> {signal_data['signal_type']}
+    strength_emoji = "🟢" if strength == "HARD" else "🟡"
+    slope_text = "↗ Strong" if slope > 1 else "→ Weak" if slope > 0 else "↘ Weak"
 
-<b>📍 Entry:</b> {signal_data['entry_price']:.4f}
-<b>🛑 Stop Loss:</b> {signal_data['stop_loss']:.4f}
-<b>🎯 Take Profit:</b> {signal_data['take_profit']:.4f}
+    return (
+        f"<b>🧠 SMART MONEY SETUP CONFIRMED {strength_emoji}</b>\n\n"
+        f"<b>Pair:</b> {symbol}\n"
+        f"<b>Direction:</b> {signal_data['signal_type']}\n\n"
 
-<b>HTF (1H)</b>
-✔ Liquidity Sweep  
-✔ Wick Rejection  
-✔ EMA Trend: {htf_trend}
+        f"<b>📍 Entry:</b> {signal_data['entry_price']:.4f}\n"
+        f"<b>🛑 Stop Loss:</b> {signal_data['stop_loss']:.4f}\n"
+        f"<b>🎯 Take Profit:</b> {signal_data['take_profit']:.4f}\n\n"
 
-<b>LTF (5m / 15m)</b>
-✔ MSS / CHoCH  
-✔ FVG Pullback  
-✔ Confirmation Close  
+        f"<b>HTF (1H)</b>\n"
+        f"✔ Liquidity Sweep\n"
+        f"✔ Wick Rejection\n"
+        f"✔ EMA Trend: {htf_trend}\n\n"
 
-⚖️ R:R ≥ 1:2  
-🚫 One trade per setup  
+        f"<b>LTF (5m / 15m)</b>\n"
+        f"✔ MSS / CHoCH\n"
+        f"✔ FVG Pullback\n"
+        f"✔ Confirmation Close\n\n"
 
-<b>💼 Session:</b> {session}
-<b>🆔 Setup ID:</b> {setup_id}
-"""
+        f"<b>📊 TDI Analysis</b>\n"
+        f"• Slow MA: {tdi:.2f}\n"
+        f"• Slope: {slope_text}\n"
+        f"• Strength: {strength}\n\n"
+
+        f"<b>📐 ATR:</b> {atr:.4f}\n\n"
+
+        f"⚖️ R:R ≥ 1:2\n"
+        f"🚫 One trade per setup\n\n"
+
+        f"<b>💼 Session:</b> {session}\n"
+        f"<b>🆔 Setup ID:</b> {setup_id}"
+    )
+
 
 # -------------------- MAIN LOOP --------------------
 def main():
-    logger.info("🚀 Starting Binance Smart Money Client...")
+    logger.info("🚀 Smart Money Bot Started")
 
-    try:
-        client = BinanceDataClient()
-        strategy = ConsolidatedTrendStrategy()
+    client = BinanceDataClient()
+    strategy = ConsolidatedTrendStrategy()
+    last_setups: Dict[str, str] = {}
 
-        safe_send_telegram_message(
-            f"✅ Bot started\nMonitoring: {', '.join(client.price_precisions.keys())}"
-        )
+    safe_send_telegram_message(
+        f"✅ Bot online\nSymbols: {', '.join(client.price_precisions.keys())}"
+    )
 
-        last_setups: Dict[str, str] = {}
+    while True:
+        session = get_current_session()
 
-        while True:
-            session = get_current_session()
+        for symbol in client.price_precisions.keys():
+            try:
+                df_5m = client.get_historical_klines(symbol, "5m", 120)
+                df_1h = client.get_historical_klines(symbol, "1h", 60)
 
-            for symbol in client.price_precisions.keys():
-                try:
-                    price = client.get_current_price(symbol)
-                    df_5m = client.get_historical_klines(symbol, "5m", 100)
-                    df_1h = client.get_historical_klines(symbol, "1h", 50)
+                if df_5m.empty or df_1h.empty:
+                    continue
 
-                    if df_5m.empty or df_1h.empty or price is None:
-                        continue
+                strategy.set_htf_trend(df_1h)
+                htf_trend = strategy.get_strategy_stats().get("htf_trend", "UNKNOWN")
 
-                    strategy.set_htf_trend(df_1h)
-                    htf_trend = strategy.get_strategy_stats()["htf_trend"]
+                df_5m = strategy.analyze_data(df_5m)
+                signal_type, signal_data = strategy.generate_signal(df_5m)
 
-                    df_5m = strategy.analyze_data(df_5m)
-                    signal_type, signal_data = strategy.generate_signal(df_5m)
+                if signal_type == "NO_TRADE":
+                    continue
 
-                    if signal_type == "NO_TRADE":
-                        continue
+                signal_data["signal_type"] = signal_type
+                setup_id = f"{symbol}_{signal_type}_{session}_{int(time.time() // 60)}"
 
-                    signal_data["signal_type"] = signal_type
-                    setup_id = f"{symbol}_{signal_type}_{session}_{int(time.time() // 60)}"
+                if last_setups.get(symbol) == setup_id:
+                    continue
 
-                    if last_setups.get(symbol) == setup_id:
-                        continue
+                msg = format_smart_money_message(
+                    symbol, signal_data, htf_trend, session, setup_id
+                )
+                safe_send_telegram_message(msg)
+                last_setups[symbol] = setup_id
 
-                    message = format_smart_money_message(
-                        symbol,
-                        signal_data,
-                        htf_trend,
-                        session,
-                        setup_id
-                    )
+            except Exception as e:
+                logger.error(f"❌ {symbol} processing error: {e}")
 
-                    safe_send_telegram_message(message)
-                    last_setups[symbol] = setup_id
-
-                except Exception as e:
-                    logger.error(f"❌ Error processing {symbol}: {e}")
-
-            time.sleep(Config.POLLING_INTERVAL_SECONDS)
-
-    except Exception as e:
-        logger.critical(f"🔥 Global critical error: {e}")
+        time.sleep(Config.POLLING_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
